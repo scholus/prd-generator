@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//private/tmp/**)",
+      "Bash(mkdir -p prd_analysis)",
+      "Bash(pandoc \"/Users/dionscholus/Downloads/PRD Template.docx\" -o /tmp/prd_analysis/template.md)",
+      "Bash(brew install:*)",
+      "Bash(mkdir -p /tmp/prd_analysis)",
+      "Bash(python3 __TRACKED_VAR__/scripts/office/unpack.py '/Users/dionscholus/Downloads/PRD Template.docx' /tmp/prd_analysis/template_unpacked/)",
+      "Bash(pip3 install:*)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3 '/Users/dionscholus/Library/Application Support/Claude/local-agent-mode-sessions/skills-plugin/61024f70-5db4-490f-871e-3690df3850c1/a5231bdb-6e52-44d1-9d1b-0282a45e6486/skills/docx/scripts/office/unpack.py' '/Users/dionscholus/Downloads/PRDs/Ezfiles PRD v0.2.docx' /tmp/prd_analysis/ezfiles_unpacked/)",
+      "Bash(npm create:*)",
+      "Bash(npm init:*)",
+      "Bash(npm install:*)",
+      "Bash(ls /Users/dionscholus/Documents/claude/PO/*.js /Users/dionscholus/Documents/claude/PO/*.mjs /Users/dionscholus/Documents/claude/PO/server*)",
+      "Bash(npx vite *)"
+    ]
+  }
+}
