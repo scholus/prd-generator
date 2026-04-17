@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
-import { spawn, execSync } from 'child_process'
+import { spawn } from 'child_process'
+import { existsSync } from 'fs'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
@@ -8,22 +9,24 @@ import { generatePRDDocx } from './generateDocx.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-// Resolve claude binary path at startup
+// Keep server alive on unhandled errors
+process.on('uncaughtException', err => console.error('Uncaught:', err))
+process.on('unhandledRejection', err => console.error('Unhandled rejection:', err))
+
+// Resolve claude binary path using fs (no execSync)
 function findClaudePath() {
-  // Try common install locations first
+  const home = process.env.HOME || ''
   const candidates = [
     '/opt/homebrew/bin/claude',
     '/usr/local/bin/claude',
-    `${process.env.HOME}/.local/bin/claude`,
-    `${process.env.HOME}/.npm-global/bin/claude`,
+    `${home}/.local/bin/claude`,
+    `${home}/.npm-global/bin/claude`,
     '/usr/bin/claude',
   ]
   for (const p of candidates) {
-    try { execSync(`test -x "${p}"`); return p } catch {}
+    if (existsSync(p)) return p
   }
-  // Fall back to PATH resolution
-  try { return execSync('which claude').toString().trim() } catch {}
-  return 'claude' // last resort
+  return 'claude' // fall back to PATH lookup at spawn time
 }
 
 const CLAUDE_PATH = findClaudePath()
@@ -161,46 +164,45 @@ GLOBAL RULES:
 // ── Call claude CLI — uses Claude Code auth, no separate API key needed ──────
 function callClaude(userPrompt) {
   return new Promise((resolve, reject) => {
-    const args = [
-      '--print',
-      '--model', 'claude-sonnet-4-5',
-      '--system-prompt', PRD_SYSTEM,
-    ]
+    const claudeBin = CLAUDE_PATH
+    const args = ['--print', '--model', 'claude-sonnet-4-5', '--system-prompt', PRD_SYSTEM]
 
-    console.log(`Spawning: ${CLAUDE_PATH} ${args.slice(0, 4).join(' ')} ...`)
+    console.log(`[claude] spawning: ${claudeBin} --print --model claude-sonnet-4-5 --system-prompt [...]`)
 
-    const proc = spawn(CLAUDE_PATH, args, {
+    const proc = spawn(claudeBin, args, {
+      shell: false,
       env: {
         ...process.env,
-        PATH: [
-          '/opt/homebrew/bin',
-          '/usr/local/bin',
-          `${process.env.HOME}/.local/bin`,
-          `${process.env.HOME}/.npm-global/bin`,
-          process.env.PATH,
-        ].filter(Boolean).join(':'),
-      }
+        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.npm-global/bin:${process.env.PATH}`,
+        ANTHROPIC_NON_INTERACTIVE: '1',
+      },
     })
 
     let stdout = ''
     let stderr = ''
+
     proc.stdin.write(userPrompt)
     proc.stdin.end()
+
     proc.stdout.on('data', d => { stdout += d.toString() })
     proc.stderr.on('data', d => {
       stderr += d.toString()
-      process.stderr.write(d) // mirror to server console for debugging
+      process.stderr.write(d)
     })
+
     proc.on('close', code => {
+      console.log(`[claude] exited with code ${code}`)
       if (code !== 0) {
-        const detail = stderr.trim() || `(no stderr)`
-        console.error(`claude exited with code ${code}: ${detail}`)
+        const detail = stderr.trim() || '(no stderr output)'
         reject(new Error(`claude exited with code ${code}: ${detail}`))
       } else {
         resolve(stdout.trim())
       }
     })
-    proc.on('error', err => reject(new Error(`Failed to start claude (${CLAUDE_PATH}): ${err.message}`)))
+
+    proc.on('error', err => {
+      reject(new Error(`Failed to start claude (${claudeBin}): ${err.message}`))
+    })
   })
 }
 
