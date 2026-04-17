@@ -95,9 +95,11 @@ Follow this exact PRD structure in order. Do not skip any section.
      [Action] = user or system action
      {Decision?} = condition or decision point
      Edge labels = condition text (e.g., "Ya", "Tidak", "Success", "Failed", "Valid", "Invalid")
-   - Format:
+   - Format for each flowchart — strictly follow this structure:
+
      #### Feature N: [Feature Name]
-     [2-3 sentence explanation of this flow: what the user is trying to achieve, the key decision point(s), and what happens on success vs failure]
+
+     [Mermaid diagram first]
      \`\`\`mermaid
      flowchart TD
          A([Start]) --> B[Action]
@@ -108,8 +110,19 @@ Follow this exact PRD structure in order. Do not skip any section.
          E --> G([End: Failed])
      \`\`\`
 
+     [Then AFTER the diagram: a phase-by-phase walkthrough explanation]
+
+     The explanation MUST:
+     - Be structured as named phases that group steps logically (e.g., "**Phase 1: [Phase Name]**")
+     - Each phase starts with a bold title on its own line, followed by a one-sentence summary of what this phase accomplishes
+     - Under each phase, use bullet points — one bullet per node or decision in the chart for that phase
+     - Each bullet must explain WHY the step exists or what it means, not just restate the node label. Include business logic, technical rationale, or UX intent where relevant
+     - Cover every branch: explain what happens on the happy path AND what happens on each failure/error path
+     - Write in plain language a non-technical stakeholder can follow
+     - Minimum 3 phases, each with at least 2 bullet points
+
    Add a Mermaid sequence diagram ONLY if a feature involves 2 or more systems interacting (e.g. FE + BE + DB, or user + third-party API). Skip sequence diagram if feature is purely frontend or single-system.
-   - For every sequence diagram, write a 2-3 sentence explanation BEFORE the diagram: describe which systems are involved, what triggers the interaction, and what the expected outcome is.
+   - For every sequence diagram: place the diagram first, then the same phase-by-phase explanation format below it.
 
 9. Key Features List
    - Concise numbered list of main features to build
