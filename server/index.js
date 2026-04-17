@@ -1,12 +1,33 @@
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
 import express from 'express'
 import cors from 'cors'
 import multer from 'multer'
 import { generatePRDDocx } from './generateDocx.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Resolve claude binary path at startup
+function findClaudePath() {
+  // Try common install locations first
+  const candidates = [
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    `${process.env.HOME}/.local/bin/claude`,
+    `${process.env.HOME}/.npm-global/bin/claude`,
+    '/usr/bin/claude',
+  ]
+  for (const p of candidates) {
+    try { execSync(`test -x "${p}"`); return p } catch {}
+  }
+  // Fall back to PATH resolution
+  try { return execSync('which claude').toString().trim() } catch {}
+  return 'claude' // last resort
+}
+
+const CLAUDE_PATH = findClaudePath()
+console.log(`Using claude at: ${CLAUDE_PATH}`)
 
 const app = express()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
@@ -140,24 +161,46 @@ GLOBAL RULES:
 // ── Call claude CLI — uses Claude Code auth, no separate API key needed ──────
 function callClaude(userPrompt) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', [
+    const args = [
       '--print',
-      '--model', 'claude-sonnet-4-6',
+      '--model', 'claude-sonnet-4-5',
       '--system-prompt', PRD_SYSTEM,
-      '--no-session-persistence',
-    ], { env: { ...process.env, PATH: process.env.PATH } })
+    ]
+
+    console.log(`Spawning: ${CLAUDE_PATH} ${args.slice(0, 4).join(' ')} ...`)
+
+    const proc = spawn(CLAUDE_PATH, args, {
+      env: {
+        ...process.env,
+        PATH: [
+          '/opt/homebrew/bin',
+          '/usr/local/bin',
+          `${process.env.HOME}/.local/bin`,
+          `${process.env.HOME}/.npm-global/bin`,
+          process.env.PATH,
+        ].filter(Boolean).join(':'),
+      }
+    })
 
     let stdout = ''
     let stderr = ''
     proc.stdin.write(userPrompt)
     proc.stdin.end()
     proc.stdout.on('data', d => { stdout += d.toString() })
-    proc.stderr.on('data', d => { stderr += d.toString() })
-    proc.on('close', code => {
-      if (code !== 0) reject(new Error(stderr.trim() || `claude exited with code ${code}`))
-      else resolve(stdout.trim())
+    proc.stderr.on('data', d => {
+      stderr += d.toString()
+      process.stderr.write(d) // mirror to server console for debugging
     })
-    proc.on('error', err => reject(new Error(`Failed to start claude: ${err.message}`)))
+    proc.on('close', code => {
+      if (code !== 0) {
+        const detail = stderr.trim() || `(no stderr)`
+        console.error(`claude exited with code ${code}: ${detail}`)
+        reject(new Error(`claude exited with code ${code}: ${detail}`))
+      } else {
+        resolve(stdout.trim())
+      }
+    })
+    proc.on('error', err => reject(new Error(`Failed to start claude (${CLAUDE_PATH}): ${err.message}`)))
   })
 }
 
