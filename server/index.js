@@ -180,7 +180,6 @@ GLOBAL RULES:
 const CLAUDE_SPAWN_ENV = {
   ...process.env,
   PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.npm-global/bin:${process.env.PATH}`,
-  ANTHROPIC_NON_INTERACTIVE: '1',
 }
 
 // ── POST /api/generate-prd  (SSE streaming) ───────────────────────────────────
@@ -210,7 +209,7 @@ app.post('/api/generate-prd', upload.array('files'), (req, res) => {
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders()
 
-  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
+  const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`) } catch {} }
 
   console.log(`[claude] spawning stream for: ${productName || inputType}`)
   const proc = spawn(CLAUDE_PATH, ['--print', '--model', 'claude-sonnet-4-5', '--system-prompt', PRD_SYSTEM], {
@@ -223,21 +222,33 @@ app.post('/api/generate-prd', upload.array('files'), (req, res) => {
   proc.stdout.on('data', chunk => send({ text: chunk.toString() }))
   proc.stderr.on('data', d => process.stderr.write(d))
 
-  proc.on('close', code => {
-    console.log(`[claude] exited with code ${code}`)
-    if (code !== 0) send({ error: `claude exited with code ${code}` })
+  let procDone = false
+  proc.on('close', (code, signal) => {
+    procDone = true
+    console.log(`[claude] exited — code=${code} signal=${signal}`)
+    if (code !== 0 && signal === null) {
+      // Abnormal exit (not a signal), report the error
+      send({ error: `claude exited with code ${code}` })
+    }
     res.write('data: [DONE]\n\n')
     res.end()
   })
 
   proc.on('error', err => {
+    procDone = true
     send({ error: `Failed to start claude: ${err.message}` })
     res.write('data: [DONE]\n\n')
     res.end()
   })
 
-  // Kill claude if client disconnects
-  req.on('close', () => { try { proc.kill() } catch {} })
+  // Kill claude only if the browser genuinely disconnects mid-stream
+  // Use res 'close' (not req 'close') — req close fires too early through Vite proxy
+  res.on('close', () => {
+    if (!procDone) {
+      console.log('[claude] client disconnected — killing process')
+      try { proc.kill() } catch {}
+    }
+  })
 })
 
 // ── POST /api/download-docx ───────────────────────────────────────────────────
