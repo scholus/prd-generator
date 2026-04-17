@@ -96,6 +96,8 @@ Follow this exact PRD structure in order. Do not skip any section.
      {Decision?} = condition or decision point
      Edge labels = condition text (e.g., "Ya", "Tidak", "Success", "Failed", "Valid", "Invalid")
    - Format:
+     #### Feature N: [Feature Name]
+     [2-3 sentence explanation of this flow: what the user is trying to achieve, the key decision point(s), and what happens on success vs failure]
      \`\`\`mermaid
      flowchart TD
          A([Start]) --> B[Action]
@@ -107,6 +109,7 @@ Follow this exact PRD structure in order. Do not skip any section.
      \`\`\`
 
    Add a Mermaid sequence diagram ONLY if a feature involves 2 or more systems interacting (e.g. FE + BE + DB, or user + third-party API). Skip sequence diagram if feature is purely frontend or single-system.
+   - For every sequence diagram, write a 2-3 sentence explanation BEFORE the diagram: describe which systems are involved, what triggers the interaction, and what the expected outcome is.
 
 9. Key Features List
    - Concise numbered list of main features to build
