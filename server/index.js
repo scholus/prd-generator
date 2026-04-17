@@ -257,7 +257,15 @@ app.post('/api/download-docx', async (req, res) => {
 })
 
 const PORT = process.env.PORT || 3001
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`PRD Generator running on http://localhost:${PORT}`)
   console.log(`Using Claude Code's built-in authentication`)
+})
+server.on('error', err => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ Port ${PORT} is already in use. Kill the old process first:\n   kill -9 $(lsof -ti:${PORT})\n`)
+  } else {
+    console.error('Server error:', err)
+  }
+  process.exit(1)
 })
