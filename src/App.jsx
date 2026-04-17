@@ -132,9 +132,35 @@ export default function App() {
       attachedFiles.forEach(f => formData.append('files', f))
 
       const res = await fetch('/api/generate-prd', { method: 'POST', body: formData })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to generate PRD')
-      setPrdResult(data.result)
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Failed to generate PRD') }
+
+      // Consume SSE stream — render markdown as chunks arrive
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let accumulated = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+
+        // SSE lines end with \n\n
+        const parts = buf.split('\n\n')
+        buf = parts.pop() ?? ''
+
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data: ')) continue
+          const payload = line.slice(6)
+          if (payload === '[DONE]') continue
+          try {
+            const parsed = JSON.parse(payload)
+            if (parsed.error) throw new Error(parsed.error)
+            if (parsed.text) { accumulated += parsed.text; setPrdResult(accumulated) }
+          } catch (e) { if (e.message !== 'Unexpected token') throw e }
+        }
+      }
     } catch (err) {
       setError(err.message)
     } finally {

@@ -177,81 +177,67 @@ GLOBAL RULES:
 - Do NOT include any technical implementation details such as API endpoint names, function names, class names, database schema, code snippets, or any other coding-level specifics — the PRD is a product document, not a technical spec
 - Do NOT add any footnote, closing note, disclaimer, or meta-comment at the end of the PRD — end the document after the last section with no additional text`
 
-// ── Call claude CLI — uses Claude Code auth, no separate API key needed ──────
-function callClaude(userPrompt) {
-  return new Promise((resolve, reject) => {
-    const claudeBin = CLAUDE_PATH
-    const args = ['--print', '--model', 'claude-sonnet-4-5', '--system-prompt', PRD_SYSTEM]
-
-    console.log(`[claude] spawning: ${claudeBin} --print --model claude-sonnet-4-5 --system-prompt [...]`)
-
-    const proc = spawn(claudeBin, args, {
-      shell: false,
-      env: {
-        ...process.env,
-        PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.npm-global/bin:${process.env.PATH}`,
-        ANTHROPIC_NON_INTERACTIVE: '1',
-      },
-    })
-
-    let stdout = ''
-    let stderr = ''
-
-    proc.stdin.write(userPrompt)
-    proc.stdin.end()
-
-    proc.stdout.on('data', d => { stdout += d.toString() })
-    proc.stderr.on('data', d => {
-      stderr += d.toString()
-      process.stderr.write(d)
-    })
-
-    proc.on('close', code => {
-      console.log(`[claude] exited with code ${code}`)
-      if (code !== 0) {
-        const detail = stderr.trim() || '(no stderr output)'
-        reject(new Error(`claude exited with code ${code}: ${detail}`))
-      } else {
-        resolve(stdout.trim())
-      }
-    })
-
-    proc.on('error', err => {
-      reject(new Error(`Failed to start claude (${claudeBin}): ${err.message}`))
-    })
-  })
+const CLAUDE_SPAWN_ENV = {
+  ...process.env,
+  PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.npm-global/bin:${process.env.PATH}`,
+  ANTHROPIC_NON_INTERACTIVE: '1',
 }
 
-// ── POST /api/generate-prd ────────────────────────────────────────────────────
-app.post('/api/generate-prd', upload.array('files'), async (req, res) => {
-  try {
-    const { inputType, inputText, productName, industry, constraints } = req.body || {}
-    const files = req.files || []
+// ── POST /api/generate-prd  (SSE streaming) ───────────────────────────────────
+app.post('/api/generate-prd', upload.array('files'), (req, res) => {
+  const { inputType, inputText, productName, industry, constraints } = req.body || {}
+  const files = req.files || []
 
-    if (!inputText?.trim() && files.length === 0) {
-      return res.status(400).json({ error: 'Input text is required' })
-    }
-
-    let msg = 'Generate a complete PRD based on the following input'
-    if (files.length > 0) msg += ' and the attached file(s) (use them as source material and context)'
-    msg += `:\n\nInput type: ${inputType}\n\n${inputText || ''}`
-    if (productName) msg += `\n\nProduct/feature name: ${productName}`
-    if (industry)    msg += `\nIndustry/domain: ${industry}`
-    if (constraints) msg += `\nConstraints: ${constraints}`
-
-    // Append text file contents
-    for (const file of files) {
-      const isText = file.mimetype?.startsWith('text/') || file.mimetype === 'application/json' || file.originalname?.endsWith('.md')
-      if (isText) msg += `\n\nAttached file (${file.originalname}):\n${file.buffer.toString('utf-8').slice(0, 10000)}`
-    }
-
-    const result = await callClaude(msg)
-    res.json({ result })
-
-  } catch (err) {
-    console.error('Generate error:', err)
-    res.status(500).json({ error: err.message || 'Internal server error' })
+  if (!inputText?.trim() && files.length === 0) {
+    return res.status(400).json({ error: 'Input text is required' })
   }
+
+  // Build prompt
+  let msg = 'Generate a complete PRD based on the following input'
+  if (files.length > 0) msg += ' and the attached file(s) (use them as source material and context)'
+  msg += `:\n\nInput type: ${inputType}\n\n${inputText || ''}`
+  if (productName) msg += `\n\nProduct/feature name: ${productName}`
+  if (industry)    msg += `\nIndustry/domain: ${industry}`
+  if (constraints) msg += `\nConstraints: ${constraints}`
+  for (const file of files) {
+    const isText = file.mimetype?.startsWith('text/') || file.mimetype === 'application/json' || file.originalname?.endsWith('.md')
+    if (isText) msg += `\n\nAttached file (${file.originalname}):\n${file.buffer.toString('utf-8').slice(0, 10000)}`
+  }
+
+  // Open SSE stream
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
+
+  console.log(`[claude] spawning stream for: ${productName || inputType}`)
+  const proc = spawn(CLAUDE_PATH, ['--print', '--model', 'claude-sonnet-4-5', '--system-prompt', PRD_SYSTEM], {
+    shell: false, env: CLAUDE_SPAWN_ENV,
+  })
+
+  proc.stdin.write(msg)
+  proc.stdin.end()
+
+  proc.stdout.on('data', chunk => send({ text: chunk.toString() }))
+  proc.stderr.on('data', d => process.stderr.write(d))
+
+  proc.on('close', code => {
+    console.log(`[claude] exited with code ${code}`)
+    if (code !== 0) send({ error: `claude exited with code ${code}` })
+    res.write('data: [DONE]\n\n')
+    res.end()
+  })
+
+  proc.on('error', err => {
+    send({ error: `Failed to start claude: ${err.message}` })
+    res.write('data: [DONE]\n\n')
+    res.end()
+  })
+
+  // Kill claude if client disconnects
+  req.on('close', () => { try { proc.kill() } catch {} })
 })
 
 // ── POST /api/download-docx ───────────────────────────────────────────────────
