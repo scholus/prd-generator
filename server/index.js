@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import { spawn } from 'child_process'
@@ -212,7 +213,7 @@ app.post('/api/generate-prd', upload.array('files'), (req, res) => {
   const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`) } catch {} }
 
   console.log(`[claude] spawning stream for: ${productName || inputType}`)
-  const proc = spawn(CLAUDE_PATH, ['--print', '--model', 'claude-sonnet-4-5', '--system-prompt', PRD_SYSTEM], {
+  const proc = spawn(CLAUDE_PATH, ['--print', '--model', 'claude-sonnet-4-6', '--system-prompt', PRD_SYSTEM], {
     shell: false, env: CLAUDE_SPAWN_ENV,
   })
 
