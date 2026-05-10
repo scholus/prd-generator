@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
-import { spawn } from 'child_process'
+import { execFileSync, spawn } from 'child_process'
 import { existsSync } from 'fs'
 import express from 'express'
 import cors from 'cors'
@@ -14,7 +14,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 process.on('uncaughtException', err => console.error('Uncaught:', err))
 process.on('unhandledRejection', err => console.error('Unhandled rejection:', err))
 
-// Resolve claude binary path using fs (no execSync)
+// ── Claude binary path ────────────────────────────────────────────────────────
 function findClaudePath() {
   const home = process.env.HOME || ''
   const candidates = [
@@ -24,14 +24,66 @@ function findClaudePath() {
     `${home}/.npm-global/bin/claude`,
     '/usr/bin/claude',
   ]
-  for (const p of candidates) {
-    if (existsSync(p)) return p
-  }
-  return 'claude' // fall back to PATH lookup at spawn time
+  for (const p of candidates) { if (existsSync(p)) return p }
+  return 'claude'
 }
-
 const CLAUDE_PATH = findClaudePath()
 console.log(`Using claude at: ${CLAUDE_PATH}`)
+
+// ── OAuth token management (reads from macOS Keychain) ────────────────────────
+function readKeychainCreds() {
+  try {
+    const raw = execFileSync('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'], { encoding: 'utf8' }).trim()
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+async function refreshOAuthToken(refreshToken) {
+  // Try Anthropic's OAuth refresh endpoints in order
+  const endpoints = [
+    'https://claude.ai/api/auth/oauth/token',
+    'https://api.anthropic.com/oauth/token',
+  ]
+  for (const url of endpoints) {
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        return data.access_token || data.accessToken || null
+      }
+    } catch {}
+  }
+  return null
+}
+
+async function getAuthToken() {
+  // Prefer explicit API key in env (for users with API credits)
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY
+
+  // Fall back to OAuth token from macOS Keychain (Claude Code / claude.ai subscription)
+  const creds = readKeychainCreds()
+  const oauth = creds?.claudeAiOauth
+  if (!oauth) return null
+
+  const { accessToken, refreshToken, expiresAt } = oauth
+  const isExpired = Date.now() >= (expiresAt - 60_000)
+
+  if (!isExpired) return accessToken
+
+  console.log('[auth] OAuth token expired, attempting refresh…')
+  const fresh = await refreshOAuthToken(refreshToken)
+  if (fresh) { console.log('[auth] Token refreshed successfully'); return fresh }
+
+  console.warn('[auth] Refresh failed — run `claude auth login` in Terminal.app')
+  // Return the expired token anyway; the API will give a clear 401 if it truly won't work
+  return accessToken
+}
 
 const app = express()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
@@ -178,13 +230,8 @@ GLOBAL RULES:
 - Do NOT include any technical implementation details such as API endpoint names, function names, class names, database schema, code snippets, or any other coding-level specifics — the PRD is a product document, not a technical spec
 - Do NOT add any footnote, closing note, disclaimer, or meta-comment at the end of the PRD — end the document after the last section with no additional text`
 
-const CLAUDE_SPAWN_ENV = {
-  ...process.env,
-  PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME}/.local/bin:${process.env.HOME}/.npm-global/bin:${process.env.PATH}`,
-}
-
-// ── POST /api/generate-prd  (SSE streaming) ───────────────────────────────────
-app.post('/api/generate-prd', upload.array('files'), (req, res) => {
+// ── POST /api/generate-prd  (SSE streaming via Anthropic SDK) ────────────────
+app.post('/api/generate-prd', upload.array('files'), async (req, res) => {
   const { inputType, inputText, productName, industry, constraints } = req.body || {}
   const files = req.files || []
 
@@ -212,24 +259,38 @@ app.post('/api/generate-prd', upload.array('files'), (req, res) => {
 
   const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`) } catch {} }
 
-  console.log(`[claude] spawning stream for: ${productName || inputType}`)
+  const token = await getAuthToken()
+  if (!token) {
+    send({ error: 'Not authenticated. Open Terminal.app and run: claude auth login' })
+    res.write('data: [DONE]\n\n')
+    return res.end()
+  }
+
+  console.log(`[claude] spawning for: ${productName || inputType}`)
+
   const proc = spawn(CLAUDE_PATH, ['--print', '--model', 'claude-sonnet-4-6', '--system-prompt', PRD_SYSTEM], {
-    shell: false, env: CLAUDE_SPAWN_ENV,
+    shell: false,
+    env: { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME}/.local/bin:${process.env.PATH}` },
   })
 
   proc.stdin.write(msg)
   proc.stdin.end()
 
+  let stderr = ''
   proc.stdout.on('data', chunk => send({ text: chunk.toString() }))
-  proc.stderr.on('data', d => process.stderr.write(d))
+  proc.stderr.on('data', d => { stderr += d.toString(); process.stderr.write(d) })
 
   let procDone = false
   proc.on('close', (code, signal) => {
     procDone = true
-    console.log(`[claude] exited — code=${code} signal=${signal}`)
     if (code !== 0 && signal === null) {
-      // Abnormal exit (not a signal), report the error
-      send({ error: `claude exited with code ${code}` })
+      const errText = stderr.toLowerCase()
+      const hint = errText.includes('401') || errText.includes('authentication')
+        ? 'Authentication failed. Open Terminal.app and run: claude auth login'
+        : errText.includes('429') || errText.includes('rate')
+        ? 'Rate limited by Claude. Wait a moment and try again.'
+        : stderr.trim() || `claude exited with code ${code}`
+      send({ error: hint })
     }
     res.write('data: [DONE]\n\n')
     res.end()
@@ -242,14 +303,12 @@ app.post('/api/generate-prd', upload.array('files'), (req, res) => {
     res.end()
   })
 
-  // Kill claude only if the browser genuinely disconnects mid-stream
-  // Use res 'close' (not req 'close') — req close fires too early through Vite proxy
   res.on('close', () => {
-    if (!procDone) {
-      console.log('[claude] client disconnected — killing process')
-      try { proc.kill() } catch {}
-    }
+    if (!procDone) { try { proc.kill() } catch {} }
   })
+
+  res.write('data: [DONE]\n\n')
+  res.end()
 })
 
 // ── POST /api/download-docx ───────────────────────────────────────────────────
@@ -273,7 +332,7 @@ app.post('/api/download-docx', async (req, res) => {
 const PORT = process.env.PORT || 3001
 const server = app.listen(PORT, () => {
   console.log(`PRD Generator running on http://localhost:${PORT}`)
-  console.log(`Using Claude Code's built-in authentication`)
+  console.log(`Auth: ANTHROPIC_API_KEY env → Claude Keychain OAuth (auto-fallback)`)
 })
 server.on('error', err => {
   if (err.code === 'EADDRINUSE') {
